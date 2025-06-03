@@ -8,8 +8,7 @@ from src.crawler.soundcloud_follower import clickhouse_client, redis_client
 from src.util.config import PROXY_TUNNEL, PROXY_USER_NAME, PROXY_PWD, SOUNDCLOUD_CLIENT_ID, PROXY_URL
 from src.util.db import close_connections
 from src.util.logger import logger
-from src.util.transform_fields import parse_datetime, safe_int, safe_bool, safe_release_date, safe_str, \
-    safe_nullable_string, transform_track_to_ck
+from src.util.transform_fields import transform_track_to_ck, TRACK_COLS
 
 CLICKHOUSE_TABLE = "tracks"
 REDIS_KEY_IDENTIFIER = "lionel_2M"
@@ -25,24 +24,6 @@ RETRY_BACKOFF = 1.2
 PROXY_TUNNEL = PROXY_TUNNEL
 PROXY_USER_NAME = PROXY_USER_NAME
 PROXY_PWD = PROXY_PWD
-
-# --- SCHEMA INFO ---
-TRACK_COLS = [
-    "id","artwork_url","caption","commentable","comment_count","created_at","description",
-    "downloadable","download_count","duration","full_duration","embeddable_by","genre",
-    "has_downloads_left","kind","label_name","last_modified","license","likes_count",
-    "permalink","permalink_url","playback_count","public","purchase_title","purchase_url",
-    "release_date","reposts_count","secret_token","sharing","state","streamable","tag_list",
-    "title","uri","urn","user_id","visuals","waveform_url","display_date","station_urn",
-    "station_permalink","track_authorization","monetization_model","policy",
-    "publisher_metadata_id","publisher_metadata_urn","publisher_metadata_artist",
-    "publisher_metadata_album_title","publisher_metadata_contains_music",
-    "publisher_metadata_upc_or_ean","publisher_metadata_isrc","publisher_metadata_explicit",
-    "publisher_metadata_p_line","publisher_metadata_p_line_for_display",
-    "publisher_metadata_c_line","publisher_metadata_c_line_for_display",
-    "publisher_metadata_release_title"
-]
-
 
 HEADERS = {
     'Host': 'api-v2.soundcloud.com',

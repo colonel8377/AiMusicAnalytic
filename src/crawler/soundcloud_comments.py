@@ -9,7 +9,7 @@ from src.crawler.soundcloud_follower import clickhouse_client, redis_client
 from src.util.config import SOUNDCLOUD_CLIENT_ID, PROXY_URL
 from src.util.db import close_connections
 from src.util.logger import logger
-from src.util.transform_fields import safe_str, safe_int, parse_datetime
+from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
 
 COMMENTS_CK_TABLE = "soundcloud_comments"
 TRACKS_CK_TABLE = "tracks"
@@ -19,24 +19,9 @@ REDIS_KEY_IDENTIFIER = f"lionel_{REDIS_OFFSET_DEFAULT_VAL}M"
 QUERY_STOP_OFFSET = 1000000
 REDIS_OFFSET_KEY = f"soundcloud:comments:{REDIS_KEY_IDENTIFIER}:track_query_offset"
 REDIS_QUERY_KEY = "soundcloud:comments:last_ck_query"
-BATCH_SIZE = 100
+BATCH_SIZE = 1000
+CONCURRENT_COMMENTS = 128
 
-COMMENT_COLS = [
-    "kind", "id", "body", "created_at", "timestamp", "track_id", "user_id", "self_urn"
-]
-
-
-def transform_comment_to_ck(comment: dict) -> list:
-    return [
-        safe_str(comment.get("kind")),
-        safe_int(comment.get("id")),
-        safe_str(comment.get("body")),
-        parse_datetime(comment.get("created_at")),
-        safe_int(comment.get("timestamp")),
-        safe_int(comment.get("track_id")),
-        safe_int(comment.get("user_id")),
-        safe_str(comment.get("self", {}).get("urn")),
-    ]
 
 def store_comments(comments):
     if comments:
@@ -111,7 +96,7 @@ async def fetch_and_store_comments_for_track(session, track_id):
             logger.error(f"Track {track_id}: Skipping due to repeated errors: {e}")
             break
         collection = data.get("collection", [])
-        comments += collection
+        comments.extend(collection)
         url = data.get("next_href")
     store_comments(comments)
 
@@ -125,7 +110,11 @@ async def crawl_comments_batch():
             logger.info("No more tracks to process. Exiting.")
             return
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
-            tasks = [fetch_and_store_comments_for_track(session, tid) for tid in track_ids]
+            sem = asyncio.Semaphore(CONCURRENT_COMMENTS)
+            async def sem_task(tid):
+                async with sem:
+                    await fetch_and_store_comments_for_track(session, tid)
+            tasks = [sem_task(tid) for tid in track_ids]
             await asyncio.gather(*tasks)
         offset += BATCH_SIZE
         set_next_track_offset(offset)
