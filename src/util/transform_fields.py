@@ -1,4 +1,3 @@
-# --- TYPE HELPERS ---
 import json
 from datetime import datetime
 
@@ -18,8 +17,8 @@ def parse_datetime(val):
         try:
             return datetime.fromisoformat(v)
         except Exception:
-            return None
-    return None
+            return datetime.fromisocalendar(1970, 1, 1)
+    return datetime.fromisocalendar(1970, 1, 1)
 
 def safe_release_date(val):
     dt = parse_datetime(val)
@@ -28,8 +27,19 @@ def safe_release_date(val):
     return dt
 
 def safe_int(val):
+    if val is None or val == "":
+        return None
     try:
         return int(val)
+    except Exception:
+        return None
+
+def safe_uint(val):
+    if val is None or val == "":
+        return 0
+    try:
+        val = int(val)
+        return val if val >= 0 else 0
     except Exception:
         return 0
 
@@ -147,11 +157,11 @@ COMMENT_COLS = [
 def transform_comment_to_ck(comment: dict) -> list:
     return [
         safe_str(comment.get("kind")),
-        safe_int(comment.get("id")),
+        safe_uint(comment.get("id")),
         safe_str(comment.get("body")),
         parse_datetime(comment.get("created_at")),
-        safe_int(comment.get("timestamp")),
-        safe_int(comment.get("track_id")),
-        safe_int(comment.get("user_id")),
+        safe_uint(comment.get("timestamp")),
+        safe_uint(comment.get("track_id")),
+        safe_uint(comment.get("user_id")),
         safe_str(comment.get("self", {}).get("urn")),
     ]

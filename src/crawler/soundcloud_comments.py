@@ -1,7 +1,8 @@
 import asyncio
 import random
+import time
 import traceback
-
+import sys
 import aiohttp
 from aiohttp import ClientError
 
@@ -23,14 +24,17 @@ CONCURRENT_COMMENTS = 256
 
 PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
 
-def store_comments(comments):
+def store_comments(comments) -> bool:
     if comments:
         rows = [transform_comment_to_ck(c) for c in comments]
         try:
             clickhouse_client.insert(COMMENTS_CK_TABLE, rows, column_names=COMMENT_COLS)
-            logger.info(f"Inserted {len(rows)} comments to ClickHouse")
+            logger.debug(f"Inserted {len(rows)} comments to ClickHouse")
+            return True
         except Exception:
             logger.error(f"ClickHouse insert error: {traceback.format_exc()}")
+            return False
+    return True
 
 def get_next_track_offset():
     try:
@@ -74,7 +78,7 @@ async def fetch_json_with_retry(session, url, track_id, max_attempts=10):
         except (ClientError, asyncio.TimeoutError) as e:
             last_exception = e
             logger.warning(
-                f"Track {track_id}: Attempt {attempt+1}/{max_attempts} - {e} on {url} - traceback: {traceback.format_exc()}"
+                f"Track {track_id}: Attempt {attempt+1}/{max_attempts} - {e} on {url}"
             )
         await asyncio.sleep(delay)
         delay = min(delay * random.uniform(0.68, 2), 15)
@@ -94,11 +98,11 @@ async def fetch_and_store_comments_for_track(session, track_id):
             data = await fetch_json_with_retry(session, url, track_id)
         except Exception as e:
             logger.error(f"Track {track_id}: Skipping due to repeated errors: {e}")
-            break
+            return False  # fail for this track
         collection = data.get("collection", [])
         comments.extend(collection)
         url = data.get("next_href")
-    store_comments(comments)
+    return store_comments(comments)
 
 async def crawl_comments_batch():
     offset = get_next_track_offset()
@@ -109,13 +113,21 @@ async def crawl_comments_batch():
         if not track_ids:
             logger.info("No more tracks to process. Exiting.")
             return
+        begin_time = time.time()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
             sem = asyncio.Semaphore(CONCURRENT_COMMENTS)
             async def sem_task(tid):
                 async with sem:
-                    await fetch_and_store_comments_for_track(session, tid)
+                    return await fetch_and_store_comments_for_track(session, tid)
             tasks = [sem_task(tid) for tid in track_ids]
-            await asyncio.gather(*tasks)
+            task_results = await asyncio.gather(*tasks)
+            num_failures = sum(not res for res in task_results)
+            failure_rate = num_failures / len(track_ids)
+            logger.info(f"Batch finished: {num_failures} failed out of {len(track_ids)} tracks (failure rate: {failure_rate:.2%}) in {int(time.time() - begin_time)}s")
+            if failure_rate > 0.10:
+                logger.error(f"Failure rate {failure_rate:.2%} exceeds 10%, exiting immediately.")
+                close_connections()
+                sys.exit(1)
         offset += BATCH_SIZE
         set_next_track_offset(offset)
         logger.info(f"Batch complete: track offset advanced to {offset}")
