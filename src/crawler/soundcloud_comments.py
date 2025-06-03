@@ -5,9 +5,8 @@ import traceback
 import aiohttp
 from aiohttp import ClientError
 
-from src.crawler.soundcloud_follower import clickhouse_client, redis_client
-from src.util.config import SOUNDCLOUD_CLIENT_ID, PROXY_URL
-from src.util.db import close_connections
+from src.util.config import SOUNDCLOUD_CLIENT_ID, PROXY_URL, PROXY_PWD, PROXY_TUNNEL, PROXY_USER_NAME
+from src.util.db import close_connections, clickhouse_client, redis_client
 from src.util.logger import logger
 from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
 
@@ -20,8 +19,9 @@ QUERY_STOP_OFFSET = 1000000
 REDIS_OFFSET_KEY = f"soundcloud:comments:{REDIS_KEY_IDENTIFIER}:track_query_offset"
 REDIS_QUERY_KEY = "soundcloud:comments:last_ck_query"
 BATCH_SIZE = 1000
-CONCURRENT_COMMENTS = 128
+CONCURRENT_COMMENTS = 256
 
+PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
 
 def store_comments(comments):
     if comments:
@@ -66,7 +66,7 @@ async def fetch_json_with_retry(session, url, track_id, max_attempts=10):
     last_exception = None
     for attempt in range(max_attempts):
         try:
-            async with session.get(url, proxy=PROXY_URL) as resp:
+            async with session.get(url, proxy=PROXY_TUNNEL, proxy_auth=PROXY_AUTH) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 text = await resp.text()

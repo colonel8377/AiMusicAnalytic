@@ -5,7 +5,7 @@ from datetime import datetime
 
 def parse_datetime(val):
     if val is None:
-        return None
+        return datetime.fromisocalendar(1970, 1, 1)
     if isinstance(val, datetime):
         return val
     if isinstance(val, str):
