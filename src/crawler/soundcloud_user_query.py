@@ -6,7 +6,7 @@ import httpx  # pip install httpx
 from src.crawler.soundcloud_track_crawler import logger
 from src.util.config import SOUNDCLOUD_CLIENT_ID
 from src.util.db import clickhouse_client, redis_client, close_connections
-from src.util.transform_fields import safe_int, safe_str, parse_datetime, flatten_json, safe_json
+from src.util.transform_fields import safe_uint, safe_str, parse_datetime, flatten_json, safe_json
 
 # CONFIGURATION
 API_URL = f"https://api-v2.soundcloud.com/search/users?client_id={SOUNDCLOUD_CLIENT_ID}&offset=0&limit=100"
@@ -69,30 +69,30 @@ def insert_records(records, query_keyword):
     for rec in records:
         flat = flatten_json(rec)
         row = {
-            'id': safe_int(flat.get('id')),
+            'id': safe_uint(flat.get('id')),
             'avatar_url': safe_str(flat.get('avatar_url')),
             'city': safe_str(flat.get('city')),
-            'comments_count': safe_int(flat.get('comments_count')),
+            'comments_count': safe_uint(flat.get('comments_count')),
             'country_code': safe_str(flat.get('country_code')),
             'created_at': parse_datetime(flat.get('created_at')),
             'creator_subscriptions': [safe_json(rec.get('creator_subscriptions', []))],
             'creator_subscription': safe_json(rec.get('creator_subscription', {})),
             'description': safe_str(flat.get('description')),
-            'followers_count': safe_int(flat.get('followers_count')),
-            'followings_count': safe_int(flat.get('followings_count')),
+            'followers_count': safe_uint(flat.get('followers_count')),
+            'followings_count': safe_uint(flat.get('followings_count')),
             'first_name': safe_str(flat.get('first_name')),
             'full_name': safe_str(flat.get('full_name')),
-            'groups_count': safe_int(flat.get('groups_count')),
+            'groups_count': safe_uint(flat.get('groups_count')),
             'kind': safe_str(flat.get('kind')),
             'last_modified': parse_datetime(flat.get('last_modified')),
             'last_name': safe_str(flat.get('last_name')),
-            'likes_count': safe_int(flat.get('likes_count')),
-            'playlist_likes_count': safe_int(flat.get('playlist_likes_count')),
+            'likes_count': safe_uint(flat.get('likes_count')),
+            'playlist_likes_count': safe_uint(flat.get('playlist_likes_count')),
             'permalink': safe_str(flat.get('permalink')),
             'permalink_url': safe_str(flat.get('permalink_url')),
-            'playlist_count': safe_int(flat.get('playlist_count')),
-            'reposts_count': rec.safe_int('reposts_count'),  # Nullable, so leave as is
-            'track_count': safe_int(flat.get('track_count')),
+            'playlist_count': safe_uint(flat.get('playlist_count')),
+            'reposts_count': safe_uint(rec.get('reposts_count')),  # Nullable, so leave as is
+            'track_count': safe_uint(flat.get('track_count')),
             'uri': safe_str(flat.get('uri')),
             'urn': safe_str(flat.get('urn')),
             'username': safe_str(flat.get('username')),

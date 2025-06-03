@@ -117,7 +117,7 @@ def main():
         resp = requests.put(url, json={"name": node})
         logger.info(f"Switched to {node}, status: {resp.status_code}")
         i += 1
-        time.sleep(10)
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()
