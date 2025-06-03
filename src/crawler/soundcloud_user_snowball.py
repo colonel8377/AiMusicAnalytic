@@ -1,15 +1,13 @@
 import asyncio
-import json
 import traceback
-from datetime import datetime
 from typing import List
 
 import aiohttp
-from dateutil import parser as date_parser
 
 from src.util.config import SOUNDCLOUD_CLIENT_ID, SOUNDCLOUD_APP_VERSION, CLICKHOUSE_DATABASE
 from src.util.db import close_connections, redis_client, clickhouse_client
 from src.util.logger import logger
+from src.util.transform_fields import flatten_json, safe_str, safe_int, parse_datetime, safe_json
 
 CLIENT_ID = SOUNDCLOUD_CLIENT_ID
 APP_VERSION = SOUNDCLOUD_APP_VERSION
@@ -19,20 +17,6 @@ REDIS_KEY = 'soundcloud:snowbase:ck_offset_limit'
 BASE_URL="https://api-v2.soundcloud.com"
 BATCH_LIMIT = 1000
 MAX_CONCURRENCY = 24
-
-
-def robust_parse_dt(dt_str):
-    if not dt_str:
-        return datetime(1970, 1, 1)
-    try:
-        return date_parser.parse(dt_str)
-    except Exception as e:
-        logger.warning(f"Failed to parse datetime '{dt_str}': {e}, using fallback.")
-        try:
-            return datetime.fromtimestamp(int(''.join(filter(str.isdigit, dt_str))) // 1000)
-        except Exception as e2:
-            logger.error(f"Fallback datetime failed for '{dt_str}': {e2}")
-            return datetime(1970, 1, 1)
 
 
 def get_ck_offset_limit_from_redis() -> (int, int):
@@ -75,97 +59,49 @@ async def fetch_followers(session, user_id, url, max_retries=3, retry_backoff=2)
     logger.error(f"Exceeded max retries for fetch_followers for user {user_id}. URL: {url}")
     return None
 
-def flatten_json(y):
-    out = {}
-    def flatten(x, name=''):
-        if type(x) is dict:
-            for a in x:
-                flatten(x[a], f'{name}{a}_')
-        elif type(x) is list:
-            out[name[:-1]] = json.dumps(x, ensure_ascii=False)
-        else:
-            out[name[:-1]] = x
-    flatten(y)
-    return out
-
-def none_to_empty(val):
-    """Convert None to empty string, else return str(val)."""
-    if val is None:
-        return ""
-    if isinstance(val, str):
-        return val
-    return str(val)
-
-def none_to_zero(val):
-    """Convert None to zero, else return val."""
-    if val is None:
-        return 0
-    try:
-        return int(val)
-    except Exception:
-        return 0
-
-def safe_json(obj):
-    try:
-        return json.dumps(obj, ensure_ascii=False)
-    except Exception:
-        return ""
-
-def parse_dt(val):
-    # Accepts ISO string or returns default datetime
-    if not val:
-        return datetime(1970, 1, 1, 0, 0, 0)
-    try:
-        return datetime.fromisoformat(val.replace("Z", "+00:00"))
-    except Exception:
-        try:
-            return robust_parse_dt(val)
-        except Exception:
-            return datetime(1970, 1, 1, 0, 0, 0)
-
 def insert_records(records, user_id, client):
     rows = []
     for rec in records:
         flat = flatten_json(rec)
         # All .get() for non-nullable string cols are wrapped with none_to_empty
         row = {
-            'id': none_to_zero(flat.get('id', 0)),
-            'avatar_url': none_to_empty(flat.get('avatar_url')),
-            'city': none_to_empty(flat.get('city')),
-            'comments_count': none_to_zero(flat.get('comments_count')),
-            'country_code': none_to_empty(flat.get('country_code')),
-            'created_at': parse_dt(flat.get('created_at') or '1970-01-01 00:00:00'),
+            'id': safe_int(flat.get('id')),
+            'avatar_url': safe_str(flat.get('avatar_url')),
+            'city': safe_str(flat.get('city')),
+            'comments_count': safe_int(flat.get('comments_count')),
+            'country_code': safe_str(flat.get('country_code')),
+            'created_at': parse_datetime(flat.get('created_at')),
             'creator_subscriptions': [safe_json(rec.get('creator_subscriptions', []))],
             'creator_subscription': safe_json(rec.get('creator_subscription', {})),
-            'description': none_to_empty(flat.get('description')),
-            'followers_count': none_to_zero(flat.get('followers_count')),
-            'followings_count': none_to_zero(flat.get('followings_count')),
-            'first_name': none_to_empty(flat.get('first_name')),
-            'full_name': none_to_empty(flat.get('full_name')),
-            'groups_count': none_to_zero(flat.get('groups_count')),
-            'kind': none_to_empty(flat.get('kind')),
-            'last_modified': parse_dt(flat.get('last_modified') or '1970-01-01 00:00:00'),
-            'last_name': none_to_empty(flat.get('last_name')),
-            'likes_count': none_to_zero(flat.get('likes_count')),
-            'playlist_likes_count': none_to_zero(flat.get('playlist_likes_count')),
-            'permalink': none_to_empty(flat.get('permalink')),
-            'permalink_url': none_to_empty(flat.get('permalink_url')),
-            'playlist_count': none_to_zero(flat.get('playlist_count')),
-            'reposts_count': rec.get('reposts_count', 0),  # Nullable, so leave as is
-            'track_count': none_to_zero(flat.get('track_count')),
-            'uri': none_to_empty(flat.get('uri')),
-            'urn': none_to_empty(flat.get('urn')),
-            'username': none_to_empty(flat.get('username')),
+            'description': safe_str(flat.get('description')),
+            'followers_count': safe_int(flat.get('followers_count')),
+            'followings_count': safe_int(flat.get('followings_count')),
+            'first_name': safe_str(flat.get('first_name')),
+            'full_name': safe_str(flat.get('full_name')),
+            'groups_count': safe_int(flat.get('groups_count')),
+            'kind': safe_str(flat.get('kind')),
+            'last_modified': parse_datetime(flat.get('last_modified')),
+            'last_name': safe_str(flat.get('last_name')),
+            'likes_count': safe_int(flat.get('likes_count')),
+            'playlist_likes_count': safe_int(flat.get('playlist_likes_count')),
+            'permalink': safe_str(flat.get('permalink')),
+            'permalink_url': safe_str(flat.get('permalink_url')),
+            'playlist_count': safe_int(flat.get('playlist_count')),
+            'reposts_count': rec.safe_int('reposts_count'),  # Nullable, so leave as is
+            'track_count': safe_int(flat.get('track_count')),
+            'uri': safe_str(flat.get('uri')),
+            'urn': safe_str(flat.get('urn')),
+            'username': safe_str(flat.get('username')),
             'verified': int(flat.get('verified', False)),
             'visuals': safe_json(rec.get('visuals', {})),
             'badges': safe_json(rec.get('badges', {})),
-            'station_urn': none_to_empty(flat.get('station_urn')),
-            'station_permalink': none_to_empty(flat.get('station_permalink')),
+            'station_urn': safe_str(flat.get('station_urn')),
+            'station_permalink': safe_str(flat.get('station_permalink')),
             '_raw.key': [],
             '_raw.value': []
         }
         for k, v in rec.items():
-            row['_raw.key'].append(none_to_empty(k))
+            row['_raw.key'].append(safe_str(k))
             row['_raw.value'].append(safe_json(v))
         rows.append(tuple(row.values()))
 

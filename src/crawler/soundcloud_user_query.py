@@ -6,6 +6,7 @@ import httpx  # pip install httpx
 from src.crawler.soundcloud_track_crawler import logger
 from src.util.config import SOUNDCLOUD_CLIENT_ID
 from src.util.db import clickhouse_client, redis_client, close_connections
+from src.util.transform_fields import safe_int, safe_str, parse_datetime, flatten_json, safe_json
 
 # CONFIGURATION
 API_URL = f"https://api-v2.soundcloud.com/search/users?client_id={SOUNDCLOUD_CLIENT_ID}&offset=0&limit=100"
@@ -63,88 +64,49 @@ def create_table():
     """
     clickhouse_client.execute(ddl)
 
-def flatten_json(y):
-    out = {}
-    def flatten(x, name=''):
-        if type(x) is dict:
-            for a in x:
-                flatten(x[a], f'{name}{a}_')
-        elif type(x) is list:
-            out[name[:-1]] = json.dumps(x, ensure_ascii=False)
-        else:
-            out[name[:-1]] = x
-    flatten(y)
-    return out
-
-def none_to_empty(val):
-    """Convert None to empty string, else return val."""
-    return "" if val is None else val
-
-def none_to_zero(val):
-    """Convert None to zero, else return val."""
-    return 0 if val is None else val
-
-def safe_json(obj):
-    try:
-        return json.dumps(obj, ensure_ascii=False)
-    except Exception:
-        return ""
-
-from datetime import datetime
-
-def parse_dt(val):
-    # Accepts ISO string or returns default datetime
-    if not val:
-        return datetime(1970, 1, 1, 0, 0, 0)
-    try:
-        # Remove Z if present, parse
-        return datetime.fromisoformat(val.replace("Z", "+00:00"))
-    except Exception:
-        return datetime(1970, 1, 1, 0, 0, 0)
-
 def insert_records(records, query_keyword):
     rows = []
     for rec in records:
         flat = flatten_json(rec)
         row = {
-            'id': flat.get('id', 0) or 0,
-            'avatar_url': none_to_empty(flat.get('avatar_url')),
-            'city': none_to_empty(flat.get('city')),
-            'comments_count': none_to_zero(flat.get('comments_count')),
-            'country_code': none_to_empty(flat.get('country_code')),
-            'created_at': parse_dt(flat.get('created_at') or '1970-01-01 00:00:00'),
+            'id': safe_int(flat.get('id')),
+            'avatar_url': safe_str(flat.get('avatar_url')),
+            'city': safe_str(flat.get('city')),
+            'comments_count': safe_int(flat.get('comments_count')),
+            'country_code': safe_str(flat.get('country_code')),
+            'created_at': parse_datetime(flat.get('created_at')),
             'creator_subscriptions': [safe_json(rec.get('creator_subscriptions', []))],
             'creator_subscription': safe_json(rec.get('creator_subscription', {})),
-            'description': none_to_empty(flat.get('description')),
-            'followers_count': none_to_zero(flat.get('followers_count')),
-            'followings_count': none_to_zero(flat.get('followings_count')),
-            'first_name': none_to_empty(flat.get('first_name')),
-            'full_name': none_to_empty(flat.get('full_name')),
-            'groups_count': none_to_zero(flat.get('groups_count')),
-            'kind': none_to_empty(flat.get('kind')),
-            'last_modified': parse_dt(flat.get('last_modified') or '1970-01-01 00:00:00'),
-            'last_name': none_to_empty(flat.get('last_name')),
-            'likes_count': none_to_zero(flat.get('likes_count')),
-            'playlist_likes_count': none_to_zero(flat.get('playlist_likes_count')),
-            'permalink': none_to_empty(flat.get('permalink')),
-            'permalink_url': none_to_empty(flat.get('permalink_url')),
-            'playlist_count': none_to_zero(flat.get('playlist_count')),
-            'reposts_count': rec.get('reposts_count', 0),  # Nullable, so leave as is
-            'track_count': none_to_zero(flat.get('track_count')),
-            'uri': none_to_empty(flat.get('uri')),
-            'urn': none_to_empty(flat.get('urn')),
-            'username': none_to_empty(flat.get('username')),
+            'description': safe_str(flat.get('description')),
+            'followers_count': safe_int(flat.get('followers_count')),
+            'followings_count': safe_int(flat.get('followings_count')),
+            'first_name': safe_str(flat.get('first_name')),
+            'full_name': safe_str(flat.get('full_name')),
+            'groups_count': safe_int(flat.get('groups_count')),
+            'kind': safe_str(flat.get('kind')),
+            'last_modified': parse_datetime(flat.get('last_modified')),
+            'last_name': safe_str(flat.get('last_name')),
+            'likes_count': safe_int(flat.get('likes_count')),
+            'playlist_likes_count': safe_int(flat.get('playlist_likes_count')),
+            'permalink': safe_str(flat.get('permalink')),
+            'permalink_url': safe_str(flat.get('permalink_url')),
+            'playlist_count': safe_int(flat.get('playlist_count')),
+            'reposts_count': rec.safe_int('reposts_count'),  # Nullable, so leave as is
+            'track_count': safe_int(flat.get('track_count')),
+            'uri': safe_str(flat.get('uri')),
+            'urn': safe_str(flat.get('urn')),
+            'username': safe_str(flat.get('username')),
             'verified': int(flat.get('verified', False)),
             'visuals': safe_json(rec.get('visuals', {})),
             'badges': safe_json(rec.get('badges', {})),
-            'station_urn': none_to_empty(flat.get('station_urn')),
-            'station_permalink': none_to_empty(flat.get('station_permalink')),
+            'station_urn': safe_str(flat.get('station_urn')),
+            'station_permalink': safe_str(flat.get('station_permalink')),
             'query_keyword': query_keyword,
             '_raw.key': [],
             '_raw.value': []
         }
         for k, v in rec.items():
-            row['_raw.key'].append(none_to_empty(k))
+            row['_raw.key'].append(safe_str(k))
             row['_raw.value'].append(safe_json(v))
         rows.append(tuple(row.values()))
 
