@@ -23,14 +23,13 @@ SOUNDCLOUD_APP_VERSION = int(os.getenv("SOUNDCLOUD_APP_VERSION", 0))
 PROXY_TUNNEL = os.getenv("PROXY_TUNNEL")
 PROXY_USER_NAME = os.getenv("PROXY_USER_NAME")
 PROXY_PWD = os.getenv("PROXY_PWD")
-PROXY_URL = os.getenv("PROXY_URL")
 
 
 CLASH_GROUP = os.getenv("CLASH_GROUP")
 CLASH_URL = os.getenv("CLASH_URL")
 CLASH_USER = os.getenv("CLASH_USER")
 CLASH_SECRET = os.getenv("CLASH_PASSWORD")
-
+CLASH_CONTROL_URL = os.getenv("CLASH_CONTROL_URL")
 # 可选：打包成字典，方便统一传递
 def get_config():
     return {
@@ -48,9 +47,9 @@ def get_config():
         "PROXY_TUNNEL": PROXY_TUNNEL,
         "PROXY_USER_NAME": PROXY_USER_NAME,
         "PROXY_PWD": PROXY_PWD,
-        "PROXY_URL": PROXY_URL,
         "CLASH_GROUP": CLASH_GROUP,
         "CLASH_URL": CLASH_URL,
         "CLASH_USER": CLASH_USER,
         "CLASH_SECRET": CLASH_SECRET,
+        "CLASH_CONTROL_URL": CLASH_CONTROL_URL
     }

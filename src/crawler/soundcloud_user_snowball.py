@@ -7,7 +7,8 @@ from typing import List, Tuple, Optional
 
 import aiohttp
 
-from src.util.config import SOUNDCLOUD_CLIENT_ID, SOUNDCLOUD_APP_VERSION, CLICKHOUSE_DATABASE, PROXY_URL, CLASH_URL
+from src.util.config import SOUNDCLOUD_CLIENT_ID, SOUNDCLOUD_APP_VERSION, CLICKHOUSE_DATABASE, PROXY_URL, CLASH_URL, \
+    PROXY_TUNNEL, PROXY_USER_NAME, PROXY_PWD
 from src.util.db import close_connections, redis_client, clickhouse_client
 from src.util.logger import logger
 from src.util.transform_fields import flatten_json, safe_str, safe_uint, parse_datetime, safe_json
@@ -19,7 +20,7 @@ REDIS_KEY = 'soundcloud:snowbase:ck_offset_limit'
 BASE_URL = "https://api-v2.soundcloud.com"
 BATCH_LIMIT = 1000
 MAX_CONCURRENCY = 8
-
+PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
 def get_ck_offset_limit_from_redis() -> Tuple[int, int]:
     offset = redis_client.hget(REDIS_KEY, 'offset')
     limit = redis_client.hget(REDIS_KEY, 'limit')
@@ -51,7 +52,7 @@ async def fetch_followers(
 ) -> Optional[dict]:
     for attempt in range(max_retries):
         try:
-            async with session.get(url, timeout=60) as resp:
+            async with session.get(url, timeout=60, proxy=PROXY_TUNNEL, proxy_auth=PROXY_AUTH) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 logger.warning(f"Failed to fetch followers for url {url}: HTTP {resp.status}")
@@ -125,7 +126,7 @@ def insert_records(records, user_id, client):
         logger.error(f"ClickHouse insert failed: {e}")
 
 async def snowball_user(user_id, ch_client):
-    async with aiohttp.ClientSession(trust_env=False) as session:
+    async with aiohttp.ClientSession() as session:
         url = (
             f"{BASE_URL}/users/{user_id}/followers"
             f"?client_id={CLIENT_ID}&offset=0&limit=100&linked_partitioning=1"

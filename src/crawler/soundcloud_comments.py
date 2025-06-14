@@ -6,7 +6,7 @@ import sys
 import aiohttp
 from aiohttp import ClientError
 
-from src.util.config import SOUNDCLOUD_CLIENT_ID, PROXY_URL, PROXY_PWD, PROXY_TUNNEL, PROXY_USER_NAME, CLASH_URL
+from src.util.config import SOUNDCLOUD_CLIENT_ID, PROXY_PWD, PROXY_TUNNEL, PROXY_USER_NAME, CLASH_URL
 from src.util.db import close_connections, clickhouse_client, redis_client
 from src.util.logger import logger
 from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
@@ -14,9 +14,9 @@ from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
 COMMENTS_CK_TABLE = "soundcloud_comments"
 TRACKS_CK_TABLE = "tracks"
 
-REDIS_OFFSET_DEFAULT_VAL = 0
+REDIS_OFFSET_DEFAULT_VAL = 6000000
 REDIS_KEY_IDENTIFIER = f"lionel_{REDIS_OFFSET_DEFAULT_VAL}M"
-QUERY_STOP_OFFSET = 1000000
+QUERY_STOP_OFFSET = 7000000
 REDIS_OFFSET_KEY = f"soundcloud:comments:{REDIS_KEY_IDENTIFIER}:track_query_offset"
 REDIS_QUERY_KEY = "soundcloud:comments:last_ck_query"
 BATCH_SIZE = 1000
@@ -70,7 +70,7 @@ async def fetch_json_with_retry(session, url, track_id, max_attempts=10):
     last_exception = None
     for attempt in range(max_attempts):
         try:
-            async with session.get(url, proxy=CLASH_URL) as resp:
+            async with session.get(url, proxy=PROXY_TUNNEL, proxy_auth=PROXY_AUTH) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 logger.warning(f"Track {track_id}: HTTP {resp.status} for {url}")
@@ -79,7 +79,7 @@ async def fetch_json_with_retry(session, url, track_id, max_attempts=10):
             logger.warning(
                 f"Track {track_id}: Attempt {attempt+1}/{max_attempts} - {e} on {url}"
             )
-        await asyncio.sleep(random.uniform(1, 10))
+        await asyncio.sleep(random.uniform(0, 3))
     logger.error(f"Track {track_id}: Failed after {max_attempts} attempts for {url}")
     if last_exception:
         raise last_exception
@@ -112,7 +112,8 @@ async def crawl_comments_batch():
             logger.info("No more tracks to process. Exiting.")
             return
         begin_time = time.time()
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
+        conn = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600), connector=conn) as session:
             sem = asyncio.Semaphore(CONCURRENT_COMMENTS)
             async def sem_task(tid):
                 async with sem:
