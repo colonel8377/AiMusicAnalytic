@@ -14,10 +14,10 @@ from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
 COMMENTS_CK_TABLE = "soundcloud_comments"
 TRACKS_CK_TABLE = "tracks"
 
-REDIS_OFFSET_DEFAULT_VAL = 6000000
-REDIS_KEY_IDENTIFIER = f"lionel_{REDIS_OFFSET_DEFAULT_VAL}M"
-QUERY_STOP_OFFSET = 7000000
-REDIS_OFFSET_KEY = f"soundcloud:comments:{REDIS_KEY_IDENTIFIER}:track_query_offset"
+REDIS_OFFSET_DEFAULT_VAL = 0
+REMAINDER = 0
+QUERY_STOP_OFFSET = 10000000
+REDIS_OFFSET_KEY = f"soundcloud:comments:remainder:{REMAINDER}:track_query_offset"
 REDIS_QUERY_KEY = "soundcloud:comments:last_ck_query"
 BATCH_SIZE = 1000
 CONCURRENT_COMMENTS = 8
@@ -57,7 +57,19 @@ def set_last_ck_query(query):
         logger.error(f"Redis set last CK query error: {e}")
 
 def fetch_track_ids(offset, limit):
-    query = f"SELECT id FROM {TRACKS_CK_TABLE} ORDER BY id ASC LIMIT {limit} OFFSET {offset}"
+    query = f"""
+        SELECT id FROM (
+            SELECT id
+            FROM soundcloud.tracks
+            WHERE id NOT IN (
+                SELECT track_id FROM soundcloud.soundcloud_comments GROUP BY track_id
+            )
+            GROUP BY id
+        )
+        WHERE id % 10 = {REMAINDER}
+        ORDER BY id ASC
+        LIMIT {limit} OFFSET {offset}
+        """
     set_last_ck_query(query)
     try:
         return [row[0] for row in clickhouse_client.query(query).result_rows]
@@ -70,7 +82,7 @@ async def fetch_json_with_retry(session, url, track_id, max_attempts=10):
     last_exception = None
     for attempt in range(max_attempts):
         try:
-            async with session.get(url, proxy=PROXY_TUNNEL, proxy_auth=PROXY_AUTH) as resp:
+            async with session.get(url, proxy=CLASH_URL) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 logger.warning(f"Track {track_id}: HTTP {resp.status} for {url}")
@@ -91,8 +103,10 @@ async def fetch_and_store_comments_for_track(session, track_id):
         f"?sort=newest&threaded=1&client_id={SOUNDCLOUD_CLIENT_ID}&offset=0&limit=100"
     )
     comments = []
-    while url:
+    i = 0
+    while url and i < 10000:
         try:
+            logger.debug(f"Fetching comments for {i} url {url}")
             data = await fetch_json_with_retry(session, url, track_id)
         except Exception as e:
             logger.error(f"Track {track_id}: Skipping due to repeated errors: {e}")
@@ -100,6 +114,7 @@ async def fetch_and_store_comments_for_track(session, track_id):
         collection = data.get("collection", [])
         comments.extend(collection)
         url = data.get("next_href")
+        i += 1
     return store_comments(comments)
 
 async def crawl_comments_batch():

@@ -13,8 +13,8 @@ from src.util.logger import logger
 from src.util.transform_fields import transform_track_to_ck, TRACK_COLS
 
 CLICKHOUSE_TABLE = "tracks"
-REDIS_KEY_IDENTIFIER = "lionel_0M"
-REDIS_KEY = f"soundcloud:track:{REDIS_KEY_IDENTIFIER}:offset"
+REMAINDER = "null"
+REDIS_KEY = f"soundcloud:track:remainder:{REMAINDER}:offset"
 
 BATCH_SIZE = 1000
 CONCURRENT_USERS = 8
@@ -47,15 +47,9 @@ def store_tracks(tracks):
         rows = [transform_track_to_ck(track) for track in tracks if track]
         try:
             ch_client.insert(CLICKHOUSE_TABLE, rows, column_names=TRACK_COLS)
+            logger.info(f"Inserted {len(rows)} tracks to {CLICKHOUSE_TABLE}")
         except Exception as e:
             logger.error(f"ClickHouse batch insert error: {traceback.format_exc()}")
-            # 逐行插入, 定位异常行
-            for idx, row in enumerate(rows):
-                try:
-                    ch_client.insert(CLICKHOUSE_TABLE, [row], column_names=TRACK_COLS)
-                except Exception as ee:
-                    logger.error(f"ClickHouse single insert error at row {idx}: {row}\n{traceback.format_exc()}")
-
 
 # --- REDIS OFFSET ---
 def get_next_batch_offset():
@@ -76,7 +70,18 @@ def set_next_batch_offset(offset):
 
 def fetch_user_ids(offset, limit):
     try:
-        query = f"SELECT id FROM users LIMIT {limit} OFFSET {offset}"
+        query = f"""
+                SELECT id FROM (
+                    SELECT id
+                    FROM soundcloud.users
+                    WHERE id NOT IN (
+                        SELECT user_id FROM soundcloud.tracks GROUP BY user_id
+                    )
+                    GROUP BY id
+                )
+                ORDER BY id ASC
+                LIMIT {limit} OFFSET {offset}
+                """
         return [row[0] for row in ch_client.query(query).result_rows]
     except Exception as e:
         logger.error(f"ClickHouse fetch_user_ids error: {e}")
@@ -88,7 +93,7 @@ async def fetch_json_with_retry(session, url, user_id, max_attempts=RETRY_LIMIT)
     for attempt in range(max_attempts):
         try:
             headers = HEADERS.copy()
-            async with session.get(url, headers=headers, proxy=CLASH_URL) as resp:
+            async with session.get(url, headers=headers, proxy=PROXY_TUNNEL, proxy_auth=PROXY_AUTH) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 logger.warning(f"User {user_id}: HTTP {resp.status} for {url}")
@@ -97,7 +102,7 @@ async def fetch_json_with_retry(session, url, user_id, max_attempts=RETRY_LIMIT)
             logger.warning(
                 f"User {user_id}: Attempt {attempt + 1}/{max_attempts} - {e} on {url}"
             )
-        await asyncio.sleep(random.uniform(1, 10))
+        await asyncio.sleep(random.uniform(0, 2))
 
     logger.error(f"User {user_id}: Failed after {max_attempts} attempts for {url}")
     if last_exception:
@@ -130,7 +135,7 @@ async def fetch_and_store_tracks_for_user(session, user_id):
 async def crawl_batch():
     offset = get_next_batch_offset()
     # 1000000 - 2000000 is my limit
-    while offset <= 3000000:
+    while True:
         logger.info(f"Crawling offset ({offset}) tracks, size ({BATCH_SIZE})")
         user_ids = fetch_user_ids(offset, BATCH_SIZE)
         if not user_ids:
@@ -148,8 +153,8 @@ async def crawl_batch():
             failure_rate = num_failures / len(tasks)
             logger.info(
                 f"Batch finished: {num_failures} failed out of {len(tasks)} tracks (failure rate: {failure_rate:.2%}) in {int(time.time() - begin_time)}s")
-            if failure_rate > 0.10:
-                logger.error(f"Failure rate {failure_rate:.2%} exceeds 10%, exiting immediately.")
+            if failure_rate > 0.05:
+                logger.error(f"Failure rate {failure_rate:.2%} exceeds 5%, exiting immediately.")
                 close_connections()
                 sys.exit(1)
         set_next_batch_offset(offset + BATCH_SIZE)

@@ -5,7 +5,7 @@ import os
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(module)s.%(funcName)s] %(name)s: %(message)s"
 
 # 日志级别（可通过环境变量控制，默认INFO）
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
 
 # 日志配置
 logging.basicConfig(
