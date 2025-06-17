@@ -1,31 +1,20 @@
 import asyncio
 import random
+import sys
 import time
 import traceback
-import sys
+
 import aiohttp
 from aiohttp import ClientError
 
-from src.util.config import SOUNDCLOUD_CLIENT_ID, PROXY_PWD, PROXY_TUNNEL, PROXY_USER_NAME, CLASH_URL
+from src.util.config import SOUNDCLOUD_CLIENT_ID, CLASH_URL
+from src.util.constant import COMMENTS_CK_TABLE, REDIS_QUERY_KEY, INSERT_RETRY_MAX, INSERT_BATCH_SIZE, CONSUMER_NUM, \
+    CONCURRENT_TRACKS, BATCH_SIZE, GLOBAL_FETCH_LIMIT
 from src.util.db import close_connections, clickhouse_client, redis_client
 from src.util.logger import logger
 from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
 
-COMMENTS_CK_TABLE = "soundcloud_comments"
-TRACKS_CK_TABLE = "tracks"
-
-REDIS_OFFSET_DEFAULT_VAL = 0
 REMAINDER = 0
-REDIS_OFFSET_KEY = f"soundcloud:comments:remainder:{REMAINDER}:track_query_offset"
-REDIS_QUERY_KEY = "soundcloud:comments:last_ck_query"
-BATCH_SIZE = 2500
-CONCURRENT_TRACKS = 8
-CONSUMER_NUM = 1
-GLOBAL_FETCH_LIMIT = 32
-INSERT_RETRY_MAX = 5  # 插入失败最大重试次数
-INSERT_BATCH_SIZE = 1000  # 批量插入clickhouse的条数
-
-PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
 
 def store_comments_batch(comments_batch) -> bool:
     """
@@ -50,27 +39,13 @@ def store_comments_batch(comments_batch) -> bool:
     close_connections()
     sys.exit(1)
 
-def get_next_track_offset():
-    try:
-        val = redis_client.get(REDIS_OFFSET_KEY)
-        return int(val or REDIS_OFFSET_DEFAULT_VAL)
-    except Exception as e:
-        logger.error(f"Redis get offset error: {e}")
-        return 0
-
-def set_next_track_offset(offset):
-    try:
-        redis_client.set(REDIS_OFFSET_KEY, str(offset))
-    except Exception as e:
-        logger.error(f"Redis set offset error: {e}")
-
 def set_last_ck_query(query):
     try:
         redis_client.set(REDIS_QUERY_KEY, query)
     except Exception as e:
         logger.error(f"Redis set last CK query error: {e}")
 
-def fetch_track_ids(offset, limit):
+def fetch_track_ids(limit):
     query = f"""
         SELECT id FROM (
             SELECT id
@@ -81,8 +56,7 @@ def fetch_track_ids(offset, limit):
             GROUP BY id
         )
         WHERE id % 10 = {REMAINDER}
-        ORDER BY id ASC
-        LIMIT {limit} OFFSET {offset}
+        LIMIT {limit}
         """
     set_last_ck_query(query)
     try:
@@ -174,11 +148,11 @@ async def consumer(queue: asyncio.Queue, cid=0):
             queue.task_done()
 
 async def crawl_comments_batch():
-    offset = get_next_track_offset()
+    offset = 0
     logger.info(f"Starting crawl for {offset} tracks")
     while True:
-        logger.info(f"Crawling comments for tracks at offset {offset}, batch size {BATCH_SIZE}")
-        track_ids = fetch_track_ids(offset, BATCH_SIZE)
+        logger.info(f"Crawling comments for tracks batch size {BATCH_SIZE}")
+        track_ids = fetch_track_ids(BATCH_SIZE)
         if not track_ids:
             logger.info("No more tracks to process. Exiting.")
             return
@@ -201,8 +175,6 @@ async def crawl_comments_batch():
             logger.error(f"Failure rate {failure_rate:.2%} exceeds 5%, exiting immediately.")
             close_connections()
             sys.exit(1)
-        offset += BATCH_SIZE
-        set_next_track_offset(offset)
         logger.info(f"Batch complete: track offset advanced to {offset} in {int(time.time() - begin_time)}s")
 
 def main():

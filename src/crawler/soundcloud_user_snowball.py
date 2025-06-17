@@ -7,31 +7,27 @@ from typing import List, Tuple, Optional
 
 import aiohttp
 
-from src.util.config import SOUNDCLOUD_CLIENT_ID, SOUNDCLOUD_APP_VERSION, CLICKHOUSE_DATABASE, PROXY_URL, CLASH_URL, \
-    PROXY_TUNNEL, PROXY_USER_NAME, PROXY_PWD
+from src.util.config import SOUNDCLOUD_CLIENT_ID, SOUNDCLOUD_APP_VERSION, CLICKHOUSE_DATABASE, PROXY_TUNNEL
+from src.util.constant import PROXY_AUTH, USER_CK_TABLE, SOUNDCLOUD_BASE_URL, CONCURRENT_USERS, BATCH_SIZE
 from src.util.db import close_connections, redis_client, clickhouse_client
 from src.util.logger import logger
 from src.util.transform_fields import flatten_json, safe_str, safe_uint, parse_datetime, safe_json
 
 CLIENT_ID = SOUNDCLOUD_CLIENT_ID
 APP_VERSION = SOUNDCLOUD_APP_VERSION
-TABLE_NAME = 'users'
 REDIS_KEY = 'soundcloud:snowbase:ck_offset_limit'
-BASE_URL = "https://api-v2.soundcloud.com"
-BATCH_LIMIT = 1000
-MAX_CONCURRENCY = 8
-PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
+
 def get_ck_offset_limit_from_redis() -> Tuple[int, int]:
     offset = redis_client.hget(REDIS_KEY, 'offset')
     limit = redis_client.hget(REDIS_KEY, 'limit')
-    return int(offset) if offset else 0, int(limit) if limit else BATCH_LIMIT
+    return int(offset) if offset else 0, int(limit) if limit else BATCH_SIZE
 
 def set_ck_offset_limit_to_redis(offset: int, limit: int):
     redis_client.hset(REDIS_KEY, mapping={'offset': offset, 'limit': limit})
 
-def get_seed_ids_from_ck(ch_client, offset=0, limit=BATCH_LIMIT) -> List[int]:
+def get_seed_ids_from_ck(ch_client, offset=0, limit=BATCH_SIZE) -> List[int]:
     sql = (
-        f"SELECT id FROM {CLICKHOUSE_DATABASE}.{TABLE_NAME} "
+        f"SELECT id FROM {CLICKHOUSE_DATABASE}.{USER_CK_TABLE} "
         f"ORDER BY created_at DESC LIMIT {limit} OFFSET {offset}"
     )
     try:
@@ -110,7 +106,7 @@ def insert_records(records, user_id, client):
         rows.append(tuple(row.values()))
     try:
         client.insert(
-            TABLE_NAME,
+            USER_CK_TABLE,
             rows,
             column_names=[
                 'id', 'avatar_url', 'city', 'comments_count', 'country_code', 'created_at',
@@ -121,14 +117,14 @@ def insert_records(records, user_id, client):
                 'visuals', 'badges', 'station_urn', 'station_permalink', '_raw.key', '_raw.value'
             ]
         )
-        logger.debug(f"ClickHouse insert success, user id: {user_id}, table name: {TABLE_NAME}, length: {len(rows)}")
+        logger.debug(f"ClickHouse insert success, user id: {user_id}, table name: {USER_CK_TABLE}, length: {len(rows)}")
     except Exception as e:
         logger.error(f"ClickHouse insert failed: {e}")
 
 async def snowball_user(user_id, ch_client):
     async with aiohttp.ClientSession() as session:
         url = (
-            f"{BASE_URL}/users/{user_id}/followers"
+            f"{SOUNDCLOUD_BASE_URL}/users/{user_id}/followers"
             f"?client_id={CLIENT_ID}&offset=0&limit=100&linked_partitioning=1"
             f"&app_version={APP_VERSION}&app_locale=en"
         )
@@ -157,7 +153,7 @@ async def process_batch(offset, limit):
         return False
 
     logger.info(f"Processing {len(snow_ids)} seed ids from CK.")
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+    semaphore = asyncio.Semaphore(CONCURRENT_USERS)
     begin_time = time.time()
     async def sem_task(user_id):
         async with semaphore:

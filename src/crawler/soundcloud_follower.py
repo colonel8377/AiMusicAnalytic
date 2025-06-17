@@ -1,25 +1,28 @@
 import random
 import time
 
-import httpx  # pip install httpx
+import httpx
 
 from src.crawler.soundcloud_user_query import safe_json
 from src.util.config import SOUNDCLOUD_CLIENT_ID
+from src.util.constant import FOLLOWER_CK_TABLE, SOUNDCLOUD_BASE_URL
 from src.util.db import close_connections, redis_client, clickhouse_client
 from src.util.logger import logger
 from src.util.transform_fields import flatten_json, safe_uint, safe_str, parse_datetime
 
-TABLE_NAME = "followers"
+
 REDIS_KEY = "soundcloud:last_url"
 
 LIMIT=100
 OFFSET=0
-API_URL = f"https://api-v2.soundcloud.com/users/193/followers?client_id={SOUNDCLOUD_CLIENT_ID}&limit={LIMIT}&offset={OFFSET}"
+USER_ID = 193
+
+API_URL = f"{SOUNDCLOUD_BASE_URL}/users/{USER_ID}/followers?client_id={SOUNDCLOUD_CLIENT_ID}&limit={LIMIT}&offset={OFFSET}"
 
 
 def create_table():
     ddl = f"""
-    CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+    CREATE TABLE IF NOT EXISTS {FOLLOWER_CK_TABLE} (
         id UInt64,
         avatar_url String,
         city String,
@@ -115,7 +118,7 @@ def insert_records(records):
     if rows:
         try:
             clickhouse_client.execute(
-                f"INSERT INTO {TABLE_NAME} VALUES",
+                f"INSERT INTO {FOLLOWER_CK_TABLE} VALUES",
                 rows
             )
         except Exception as e:

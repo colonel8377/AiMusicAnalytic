@@ -2,29 +2,18 @@ import asyncio
 import random
 import sys
 import time
-import traceback
 
 import aiohttp
 from aiohttp import ClientError
 
-from src.util.config import PROXY_TUNNEL, PROXY_USER_NAME, PROXY_PWD, SOUNDCLOUD_CLIENT_ID, CLASH_URL
+from src.util.config import PROXY_TUNNEL, PROXY_USER_NAME, PROXY_PWD, SOUNDCLOUD_CLIENT_ID
+from src.util.constant import TRACKS_CK_TABLE, INSERT_RETRY_MAX, RETRY_LIMIT, TRACKS_LIMIT_PER_REQUEST, \
+    CONCURRENT_USERS, INSERT_BATCH_SIZE, GLOBAL_FETCH_LIMIT, BATCH_SIZE
 from src.util.db import close_connections, clickhouse_client, redis_client
 from src.util.logger import logger
 from src.util.transform_fields import transform_track_to_ck, TRACK_COLS
 
-CLICKHOUSE_TABLE = "tracks"
-REMAINDER = "null"
-REDIS_KEY = f"soundcloud:track:remainder:{REMAINDER}:offset"
 
-BATCH_SIZE = 1000
-CONCURRENT_USERS = 8
-TRACKS_LIMIT_PER_REQUEST = 100
-RETRY_LIMIT = 10
-RETRY_BACKOFF = 1.2
-GLOBAL_FETCH_LIMIT = 32        # 全局爬取并发数（track分页也受限）
-INSERT_BATCH_SIZE = 1000       # ClickHouse 批量插入条数
-INSERT_RETRY_MAX = 2           # 插入失败最大重试次数
-# MAX_PAGES_PER_USER = 100       # 每个用户最多拉多少页track
 
 PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
 
@@ -51,8 +40,8 @@ def store_tracks_batch(tracks_batch):
         return True
     for attempt in range(INSERT_RETRY_MAX):
         try:
-            ch_client.insert(CLICKHOUSE_TABLE, rows, column_names=TRACK_COLS)
-            logger.info(f"Inserted {len(rows)} tracks to {CLICKHOUSE_TABLE}")
+            ch_client.insert(TRACKS_CK_TABLE, rows, column_names=TRACK_COLS)
+            logger.info(f"Inserted {len(rows)} tracks to {TRACKS_CK_TABLE}")
             return True
         except Exception as e:
             logger.error(f"ClickHouse batch insert error (attempt {attempt+1}/{INSERT_RETRY_MAX}): {e}")
@@ -62,21 +51,8 @@ def store_tracks_batch(tracks_batch):
     close_connections()
     sys.exit(1)
 
-def get_next_batch_offset():
-    try:
-        val = redis_client.get(REDIS_KEY)
-        return int(val or 0)
-    except Exception as e:
-        logger.error(f"Redis get offset error: {e}")
-        return 0
 
-def set_next_batch_offset(offset):
-    try:
-        redis_client.set(REDIS_KEY, str(offset))
-    except Exception as e:
-        logger.error(f"Redis set offset error: {e}")
-
-def fetch_user_ids(offset, limit):
+def fetch_user_ids(limit):
     try:
         query = f"""
                 SELECT id FROM (
@@ -87,8 +63,7 @@ def fetch_user_ids(offset, limit):
                     )
                     GROUP BY id
                 )
-                ORDER BY id ASC
-                LIMIT {limit} OFFSET {offset}
+                LIMIT {limit}
                 """
         return [row[0] for row in ch_client.query(query).result_rows]
     except Exception as e:
@@ -169,10 +144,9 @@ async def consumer(queue: asyncio.Queue, cid=0):
             queue.task_done()
 
 async def crawl_batch():
-    offset = get_next_batch_offset()
     while True:
-        logger.info(f"Crawling offset ({offset}) tracks, size ({BATCH_SIZE})")
-        user_ids = fetch_user_ids(offset, BATCH_SIZE)
+        logger.info(f"Crawling tracks size ({BATCH_SIZE})")
+        user_ids = fetch_user_ids(BATCH_SIZE)
         if not user_ids:
             logger.error("No user IDs fetched from ClickHouse. Exiting.")
             return
@@ -193,9 +167,7 @@ async def crawl_batch():
             logger.error(f"Failure rate {failure_rate:.2%} exceeds 5%, exiting immediately.")
             close_connections()
             sys.exit(1)
-        set_next_batch_offset(offset + BATCH_SIZE)
-        logger.info(f"Batch complete: users {offset} - {offset + BATCH_SIZE - 1}")
-        offset += BATCH_SIZE
+        logger.info(f"Batch complete, size ({BATCH_SIZE})")
 
 if __name__ == "__main__":
     try:

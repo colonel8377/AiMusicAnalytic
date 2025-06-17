@@ -5,11 +5,12 @@ import httpx  # pip install httpx
 
 from src.crawler.soundcloud_track_crawler import logger
 from src.util.config import SOUNDCLOUD_CLIENT_ID
+from src.util.constant import SOUNDCLOUD_BASE_URL
 from src.util.db import clickhouse_client, redis_client, close_connections
 from src.util.transform_fields import safe_uint, safe_str, parse_datetime, flatten_json, safe_json
 
 # CONFIGURATION
-API_URL = f"https://api-v2.soundcloud.com/search/users?client_id={SOUNDCLOUD_CLIENT_ID}&offset=0&limit=100"
+API_URL = f"{SOUNDCLOUD_BASE_URL}/search/users?client_id={SOUNDCLOUD_CLIENT_ID}&offset=0&limit=100"
 
 TABLE_NAME = "user_query"
 REDIS_KEY_PREFIX = "soundcloud:user_query:"
