@@ -13,8 +13,6 @@ from src.util.db import close_connections, clickhouse_client, redis_client
 from src.util.logger import logger
 from src.util.transform_fields import transform_track_to_ck, TRACK_COLS
 
-
-
 PROXY_AUTH = aiohttp.BasicAuth(PROXY_USER_NAME, PROXY_PWD)
 
 HEADERS = {
@@ -28,11 +26,9 @@ HEADERS = {
 
 ch_client = clickhouse_client
 redis_client = redis_client
+CRAWLED_REDIS_KEY = "soundcloud:crawled_users"
 
 def store_tracks_batch(tracks_batch):
-    """
-    批量写入ClickHouse，失败重试，彻底失败则退出进程
-    """
     if not tracks_batch:
         return True
     rows = [transform_track_to_ck(track) for track in tracks_batch if track]
@@ -51,23 +47,38 @@ def store_tracks_batch(tracks_batch):
     close_connections()
     sys.exit(1)
 
-
-def fetch_user_ids(limit):
+def mark_users_crawled(user_ids):
+    """
+    Batch mark user_ids as crawled in Redis.
+    """
+    if not user_ids:
+        return
     try:
-        query = f"""
-                SELECT id FROM (
-                    SELECT id
-                    FROM soundcloud.users
-                    WHERE id NOT IN (
-                        SELECT user_id FROM soundcloud.tracks GROUP BY user_id
-                    )
-                    GROUP BY id
-                )
-                LIMIT {limit}
-                """
-        return [row[0] for row in ch_client.query(query).result_rows]
+        redis_client.sadd(CRAWLED_REDIS_KEY, *user_ids)
+        logger.info(f"Marked {len(user_ids)} users as crawled in Redis")
     except Exception as e:
-        logger.error(f"ClickHouse fetch_user_ids error: {e}")
+        logger.error(f"Failed to mark {len(user_ids)} users as crawled in Redis: {e}")
+
+def fetch_user_ids():
+    """
+    Fetch user IDs from ClickHouse that do NOT already have tracks,
+    and have not been marked as crawled in Redis.
+    """
+    try:
+        # 1. Get users WITHOUT tracks in ClickHouse
+        query = f"""
+            SELECT id FROM soundcloud.users
+            WHERE id NOT IN (
+                SELECT DISTINCT user_id FROM soundcloud.tracks
+            )
+        """
+        all_ids = [row[0] for row in ch_client.query(query).result_rows]
+        # 2. Filter out those already marked as crawled in Redis
+        crawled_ids = set(map(int, redis_client.smembers(CRAWLED_REDIS_KEY)))
+        new_ids = [uid for uid in all_ids if uid not in crawled_ids]
+        return new_ids
+    except Exception as e:
+        logger.error(f"fetch_user_ids error: {e}")
         return []
 
 async def fetch_json_with_retry(session, url, user_id, fetch_limiter, max_attempts=RETRY_LIMIT):
@@ -100,7 +111,7 @@ async def fetch_tracks_for_user(session, user_id, fetch_limiter):
             data = await fetch_json_with_retry(session, url, user_id, fetch_limiter)
         except Exception as e:
             logger.error(f"User {user_id}: Skipping due to repeated errors: {e}")
-            yield None  # 明确 yield 一个 None，外层可判断
+            yield None
             return
         tracks = data.get("collection", [])
         next_href = data.get("next_href")
@@ -144,17 +155,19 @@ async def consumer(queue: asyncio.Queue, cid=0):
             queue.task_done()
 
 async def crawl_batch():
-    while True:
-        logger.info(f"Crawling tracks size ({BATCH_SIZE})")
-        user_ids = fetch_user_ids(BATCH_SIZE)
+    all_ids = fetch_user_ids()
+    logger.info(f"Begin to crawl {len(all_ids)} users.")
+    for i in range(0, len(all_ids), BATCH_SIZE):
+        user_ids = all_ids[i:i + BATCH_SIZE]
         if not user_ids:
-            logger.error("No user IDs fetched from ClickHouse. Exiting.")
-            return
+            continue
+        logger.info(f"Crawling {len(user_ids)} users")
         begin_time = time.time()
         queue = asyncio.Queue(maxsize=CONCURRENT_USERS * 10)
         fail_list = []
-        fetch_limiter = asyncio.Semaphore(GLOBAL_FETCH_LIMIT)
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600)) as session:
+        fetch_limiter = asyncio.Semaphore(GLOBAL_FETCH_LIMIT * 4)
+        conn = aiohttp.TCPConnector(limit=GLOBAL_FETCH_LIMIT * 4)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600), connector=conn, trust_env=False) as session:
             prod = asyncio.create_task(producer(queue, session, user_ids, fetch_limiter, fail_list))
             cons = asyncio.create_task(consumer(queue, 0))
             await prod
@@ -167,7 +180,8 @@ async def crawl_batch():
             logger.error(f"Failure rate {failure_rate:.2%} exceeds 5%, exiting immediately.")
             close_connections()
             sys.exit(1)
-        logger.info(f"Batch complete, size ({BATCH_SIZE})")
+        mark_users_crawled(user_ids)  # Mark as crawled before crawling
+        logger.info(f"Batch complete, size ({len(user_ids)} users)")
 
 if __name__ == "__main__":
     try:
