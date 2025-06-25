@@ -15,12 +15,9 @@ from src.util.logger import logger
 from src.util.transform_fields import transform_comment_to_ck, COMMENT_COLS
 
 REMAINDER = 0
+CRAWLED_COMMENTS_KEY = f"soundcloud:crawled_tracks_for_comments:{REMAINDER}"
 
 def store_comments_batch(comments_batch) -> bool:
-    """
-    批量写入ClickHouse，失败重试，彻底失败则退出进程
-    comments_batch: List[dict]
-    """
     if not comments_batch:
         return True
     rows = [transform_comment_to_ck(c) for c in comments_batch if c]
@@ -45,26 +42,50 @@ def set_last_ck_query(query):
     except Exception as e:
         logger.error(f"Redis set last CK query error: {e}")
 
-def fetch_track_ids(limit):
+def mark_tracks_crawled(track_ids):
+    if not track_ids:
+        return
+    try:
+        redis_client.sadd(CRAWLED_COMMENTS_KEY, *track_ids)
+        logger.info(f"Marked {len(track_ids)} tracks as crawled for comments in Redis")
+    except Exception as e:
+        logger.error(f"Failed to mark {len(track_ids)} tracks as crawled in Redis: {e}")
+
+def fetch_all_track_ids_with_remainder():
     query = f"""
-        SELECT id FROM (
-            SELECT id
-            FROM soundcloud.tracks
-            WHERE id NOT IN (
-                SELECT track_id FROM soundcloud.soundcloud_comments GROUP BY track_id
-            )
-            GROUP BY id
-        )
+        SELECT id FROM soundcloud.tracks
         WHERE id % 10 = {REMAINDER}
-        LIMIT {limit}
-        """
+        group by id
+    """
     set_last_ck_query(query)
     try:
         rows = clickhouse_client.query(query).result_rows
         return [row[0] for row in rows if row and isinstance(row[0], int)]
     except Exception as e:
-        logger.error(f"ClickHouse fetch_track_ids error: {e}")
+        logger.error(f"ClickHouse fetch_all_track_ids_with_remainder error: {e}")
         return []
+
+def fetch_ck_commented_ids():
+    query = f"SELECT track_id FROM soundcloud.soundcloud_comments WHERE track_id % 10 = {REMAINDER} group by track_id"
+    try:
+        return set(row[0] for row in clickhouse_client.query(query).result_rows)
+    except Exception as e:
+        logger.error(f"ClickHouse fetch commented track_ids error: {e}")
+        return set()
+
+def get_candidates():
+    # 1. All tracks for this remainder
+    all_ids = fetch_all_track_ids_with_remainder()
+    if not all_ids:
+        return []
+    # 2. Already crawled (Redis, as int)
+    crawled_ids = set(map(int, redis_client.smembers(CRAWLED_COMMENTS_KEY)))
+    # 3. Already in ClickHouse comments
+    ck_commented = fetch_ck_commented_ids()
+    # 4. Filter
+    candidates = [tid for tid in all_ids if tid not in crawled_ids and tid not in ck_commented]
+    random.shuffle(candidates)
+    return candidates
 
 async def fetch_json_with_retry(session, url, track_id, fetch_limiter, max_attempts=10):
     last_exception = None
@@ -135,11 +156,9 @@ async def consumer(queue: asyncio.Queue, cid=0):
         try:
             if batch is None:
                 logger.info(f"Consumer {cid}: got end signal, flushing buffer and exiting.")
-                # flush buffer on exit
                 if buffer:
                     store_comments_batch(buffer)
                 break
-            # batch is a list of comments, flatten into the buffer
             buffer.extend(batch)
             if len(buffer) >= INSERT_BATCH_SIZE:
                 store_comments_batch(buffer)
@@ -148,16 +167,19 @@ async def consumer(queue: asyncio.Queue, cid=0):
             queue.task_done()
 
 async def crawl_comments_batch():
-    offset = 0
-    logger.info(f"Starting crawl for {offset} tracks")
-    while True:
-        logger.info(f"Crawling comments for tracks batch size {BATCH_SIZE}")
-        track_ids = fetch_track_ids(BATCH_SIZE)
+    logger.info("Starting robust comment crawl (fetch once, batch mode)")
+    candidates = get_candidates()
+    total = len(candidates)
+    if not candidates:
+        logger.info("No candidates to process. Exiting.")
+        return
+    logger.info(f"Total candidates to process: {total}")
+    for i in range(0, total, BATCH_SIZE):
+        track_ids = candidates[i:i+BATCH_SIZE]
         if not track_ids:
-            logger.info("No more tracks to process. Exiting.")
-            return
+            continue
         begin_time = time.time()
-        logger.info(f"Crawling comments for {len(track_ids)} tracks")
+        logger.info(f"Processing batch {i//BATCH_SIZE+1}, size {len(track_ids)}")
         queue = asyncio.Queue(maxsize=CONCURRENT_TRACKS * 10)
         fail_list = []
         conn = aiohttp.TCPConnector(ssl=False, limit=GLOBAL_FETCH_LIMIT)
@@ -175,7 +197,8 @@ async def crawl_comments_batch():
             logger.error(f"Failure rate {failure_rate:.2%} exceeds 5%, exiting immediately.")
             close_connections()
             sys.exit(1)
-        logger.info(f"Batch complete: track offset advanced to {offset} in {int(time.time() - begin_time)}s")
+        mark_tracks_crawled(track_ids)  # Mark as crawled before processing
+        logger.info(f"Batch complete: processed {len(track_ids)} in {int(time.time() - begin_time)}s")
 
 def main():
     try:

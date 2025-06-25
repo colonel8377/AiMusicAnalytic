@@ -30,6 +30,7 @@ CLASH_URL = os.getenv("CLASH_URL")
 CLASH_USER = os.getenv("CLASH_USER")
 CLASH_SECRET = os.getenv("CLASH_PASSWORD")
 CLASH_CONTROL_URL = os.getenv("CLASH_CONTROL_URL")
+CLASH_NODE_NAMES = os.getenv("CLASH_NODE_NAMES")
 # 可选：打包成字典，方便统一传递
 def get_config():
     return {
