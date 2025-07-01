@@ -1,6 +1,38 @@
 import json
-from datetime import datetime
+import emoji
 
+from datetime import datetime, timezone
+
+
+import re
+
+def remove_emoji(text):
+    text = emoji.demojize(text)
+    # This regex matches most emoji, including flags, symbols, pictographs, emoticons, etc.
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "\U00002700-\U000027BF"  # Dingbats
+        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+        "\U00002600-\U000026FF"  # Miscellaneous Symbols
+        "\U000024C2-\U0001F251"  # Enclosed characters
+        "]+",
+        flags=re.UNICODE,
+    )
+    return emoji_pattern.sub(r'', text)
+
+def parse_casted_at(casted_at_str):
+    """
+    Convert a string like '2023-11-21 13:50:23.000000 +00:00'
+    to a Python datetime object in UTC.
+    """
+    # Remove the +00:00 and parse
+    dt = datetime.strptime(casted_at_str[:26], "%Y-%m-%d %H:%M:%S.%f")
+    # Always treat as UTC (since your data is in UTC)
+    return dt.replace(tzinfo=timezone.utc)
 
 def parse_datetime(val):
     if val is None:
